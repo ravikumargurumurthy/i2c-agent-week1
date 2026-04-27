@@ -40,3 +40,54 @@
   customer matcher is the weak link. This validates the design choice
   to compute confidence from multiple signals rather than just the LLM's
   self-report.
+
+## Day 4 (Eval results — short-pay convention bug surfaces)
+
+Pass rate: 6/10
+
+### Failures classified
+
+- **ev_003_short_pay_with_reason** — convention bug, not extraction bug.
+  Agent returned amount_paid=2400 (subtracting the $50 deduction). Eval expects 2450 (full cash).
+  Root cause: schema's validate_amounts() includes deductions in reconciliation,
+  which is inconsistent with canonical I2C convention. The Day 1 open question is now answered.
+
+- **ev_004_short_pay_no_reason** — same root cause as ev_003.
+  Same arithmetic pattern: amount_paid = total - deduction_amount.
+
+- **ev_006_ambiguous_customer** — Day 3 finding #1, lookup_customer ambiguity not surfaced.
+- **ev_010_unknown_payer** — Day 3 finding #2, WRatio over-scoring on "Corp".
+
+### Decision
+Adopt canonical I2C convention:
+- amount_paid = cash applied to invoice (full cash for short-pays)
+- deduction_amount = informational, not part of cash reconciliation
+- Reconciliation: sum(amount_paid) + unallocated_amount == total_amount
+
+Day 5 fixes:
+1. Update validate_amounts() to drop deductions from sum
+2. Strengthen system prompt with explicit convention statement
+3. Fix lookup_customer ambiguity check (gap between top 2)
+4. Fix lookup_customer scoring (strip suffixes or raise threshold)
+5. Re-run evals; target 9-10/10
+
+## Day 4 (Constraint discovered: deployment doesn't support temperature override)
+
+Tried adding temperature=0 to API call. Azure gpt-5.3-chat deployment rejected with 400:
+"Unsupported value: 'temperature' does not support 0".
+
+This is a known constraint of newer GPT models on Azure — temperature is locked
+at default. We have no direct control over sampling.
+
+### Implications
+1. Cannot enforce deterministic output via API params.
+2. Boundary cases (like ev_007) may oscillate between runs — that's intrinsic
+   to using this deployment, not a bug in our code.
+3. Must rely on:
+   - Strong procedural prompting (already in place)
+   - Post-hoc Pydantic + business validation (already in place)
+   - Multi-run evals to measure variance (deferred to Week 2)
+
+### Action
+- Reverted temperature=0 change.
+- Defer multi-run eval harness to Week 2 cleanup.

@@ -134,6 +134,9 @@ Confidence guidance:
 - 0.95+ ONLY if customer resolved with high score (>=90) AND all invoices verified open AND amounts reconcile.
 - 0.70-0.94 if there is any ambiguity (low fuzzy score, missing invoices, partial amount match).
 - Below 0.70 if customer can't be resolved confidently or invoices don't match open AR.
+- amount_paid is the cash applied to the invoice. For short-pays, this is total cash received minus nothing — the full cash amount goes to amount_paid.
+- deduction_amount is informational only. It records the disputed amount. It does NOT reduce amount_paid.
+- sum(amount_paid) + unallocated_amount must equal total_amount. Deductions do not appear in this sum.
 
 Rules:
 - Always express amounts as decimal-compatible strings (e.g. "4250.00", not 4250.00).
@@ -190,6 +193,7 @@ def extract_remittance(remittance_text: str, max_iterations: int = 6, verbose: b
             tools=TOOLS_SCHEMA,
             tool_choice="auto",
             response_format={"type": "json_object"},
+            # temperature=0,
         )
         msg = response.choices[0].message
         messages.append(msg)

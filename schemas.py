@@ -53,7 +53,8 @@ class RemittanceAdvice(BaseModel):
         errors = []
         allocated = sum(a.amount_paid for a in self.allocations)
         deducted = sum(a.deduction_amount or Decimal("0") for a in self.allocations)
-        expected = allocated + deducted + self.unallocated_amount
+        # expected = allocated + deducted + self.unallocated_amount
+        expected = allocated + self.unallocated_amount   # deductions excluded
         if abs(expected - self.total_amount) > Decimal("0.01"):
             errors.append(
                 f"Amount mismatch: allocations({allocated}) + deductions({deducted}) "
