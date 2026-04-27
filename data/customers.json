@@ -2,7 +2,7 @@
   {
     "customer_id": "CUST001",
     "legal_name": "Acme Corporation",
-    "aliases": ["Acme", "Acme Corp", "ACME CORP", "Acme Co."]
+    "aliases": ["Acme Corp", "ACME CORP", "Acme Co."]
   },
   {
     "customer_id": "CUST002",

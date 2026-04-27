@@ -54,8 +54,12 @@ TOOLS_SCHEMA = [
             "name": "lookup_customer",
             "description": (
                 "Resolve a payer name string to a customer_id via fuzzy match against "
-                "the customer master. Returns customer_id, match_score, and top 3 candidates. "
-                "If match_score is below 80 or top 2 candidates score similarly, treat as ambiguous."
+                "the customer master. Strips generic corporate suffixes (Corp, Inc, Ltd, etc.) "
+                "before scoring. Returns customer_id (or null), match_score, ambiguous flag, "
+                "and top 3 candidates. "
+                "If customer_id is null, EITHER no confident match was found (low score) "
+                "OR top 2 candidates were too close (ambiguous=true). Treat null customer_id "
+                "as 'cannot resolve' — set payer_customer_id to null and lower confidence."
             ),
             "parameters": {
                 "type": "object",

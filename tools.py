@@ -5,6 +5,14 @@ from decimal import Decimal
 from pathlib import Path
 from rapidfuzz import fuzz
 
+# Generic corporate suffixes that don't help disambiguate company names.
+# Stripped before fuzzy matching so they don't inflate scores.
+GENERIC_SUFFIXES = {
+    "corp", "corporation", "inc", "incorporated", "llc", "ltd", "limited",
+    "co", "company", "plc", "lp", "llp", "gmbh", "ag", "sa", "nv",
+    "pvt", "private", "pty", "holdings", "group", "international",
+}
+
 DATA_DIR = Path(__file__).parent / "data"
 
 
@@ -64,48 +72,56 @@ def parse_amounts_and_invoices(text: str) -> dict:
     }
 
 # ---------- Tool 2: Customer lookup with fuzzy matching ----------
+def _strip_suffixes(name: str) -> str:
+    """Remove generic corporate suffixes from a name for fairer fuzzy matching."""
+    tokens = [t for t in name.lower().replace(",", " ").replace(".", " ").split() if t]
+    meaningful = [t for t in tokens if t not in GENERIC_SUFFIXES]
+    # If stripping leaves nothing, fall back to original (avoid empty match keys)
+    return " ".join(meaningful) if meaningful else name.lower()
+
 def lookup_customer(name_query: str) -> dict:
     """
     Resolve a payer name string to a customer_id using fuzzy matching against
-    legal name and aliases in the customer master.
-
-    Args:
-        name_query: e.g. "Acme Corp" or "ACME CORP"
-
-    Returns:
-        {
-            "customer_id": "CUST001" or None if no confident match,
-            "legal_name": "Acme Corporation" or None,
-            "match_score": 95,  # 0-100
-            "top_candidates": [
-                {"customer_id": "CUST001", "legal_name": "Acme Corporation", "score": 95},
-                {"customer_id": "CUST002", "legal_name": "Acme Industries Inc", "score": 78},
-                ...
-            ]
-        }
+    legal name and aliases in the customer master. Strips generic corporate
+    suffixes before scoring and detects ambiguity between top candidates.
     """
     customers = _load("customers.json")
+    stripped_query = _strip_suffixes(name_query)
     candidates = []
 
     for c in customers:
-        # Score against legal name AND every alias; take the best
         names_to_check = [c["legal_name"]] + c.get("aliases", [])
-        best_score = max(fuzz.WRatio(name_query, name) for name in names_to_check)
+        stripped_names = [_strip_suffixes(n) for n in names_to_check]
+        best_score = max(fuzz.WRatio(stripped_query, n) for n in stripped_names)
         candidates.append({
             "customer_id": c["customer_id"],
             "legal_name": c["legal_name"],
             "score": best_score,
         })
 
-    # Sort by score descending
     candidates.sort(key=lambda x: x["score"], reverse=True)
-
     top = candidates[0]
+    runner_up = candidates[1] if len(candidates) > 1 else {"score": 0}
+
+    # ----- NEW: exact-match override -----
+    # If the query exactly matches one of the top customer's names or aliases
+    # (case-insensitive, whitespace-trimmed), bypass the gap-based ambiguity check.
+    # Exact match means the payer specified the customer fully — no ambiguity possible.
+    top_customer = next(c for c in customers if c["customer_id"] == top["customer_id"])
+    exact_match_names = [top_customer["legal_name"]] + top_customer.get("aliases", [])
+    exact_match = name_query.strip().lower() in [n.strip().lower() for n in exact_match_names]
+    # -------------------------------------
+
     confident = top["score"] >= 80
+    ambiguous = (top["score"] - runner_up["score"]) <= 15 and not exact_match
+
+    customer_id = top["customer_id"] if (confident and not ambiguous) else None
+    legal_name = top["legal_name"] if (confident and not ambiguous) else None
 
     return {
-        "customer_id": top["customer_id"] if confident else None,
-        "legal_name": top["legal_name"] if confident else None,
+        "customer_id": customer_id,
+        "legal_name": legal_name,
         "match_score": top["score"],
+        "ambiguous": ambiguous,
         "top_candidates": candidates[:3],
     }

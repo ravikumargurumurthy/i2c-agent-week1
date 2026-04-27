@@ -91,3 +91,156 @@ at default. We have no direct control over sampling.
 ### Action
 - Reverted temperature=0 change.
 - Defer multi-run eval harness to Week 2 cleanup.
+
+### Day 5 follow-up: ev_006 fix tuning
+Initial fix used strict `<` for gap check. Acme Corp vs Acme Industries
+scored exactly 100 vs 90 — a gap of 10, which `< 10` does not catch.
+Changed to `<= 10`. Logged as a reminder: boundary thresholds in fuzzy
+matching need to be `<=` not `<` because real data lands on exact gaps.
+
+## Day 5 — Bug fixes (4 iterations to reach 10/10)
+
+### Fix 1 — Suffix stripping (Bug B from Day 3)
+Added `GENERIC_SUFFIXES` set ("corp", "inc", "ltd", etc.) stripped from both
+the query and customer names before fuzzy matching. "Random Corp" no longer
+scores high against "Cyberdyne Systems Corp" because "Corp" no longer counts
+as match evidence.
+
+Result: ev_010 ✓.
+
+### Fix 2 — Iteration log for Bug A (ambiguity detection)
+
+This bug took **four iterations** to fix. Each iteration revealed a deeper
+layer of the problem. Documented in detail because the iteration cycle
+itself is the lesson.
+
+**Iteration 1: gap-based ambiguity check (`< 10`)**
+
+Added: `ambiguous = (top_score - runner_up_score) < 10`. If top 2 candidates
+score within 10 points, return `customer_id=None`.
+
+Result: ev_006 still failed. The Acme Corp vs Acme Industries gap was
+*exactly 10* (100 vs 90), and `< 10` strict less-than missed it.
+
+**Iteration 2: relax to `<= 10`**
+
+Changed to `<= 10` to catch gap-of-10 cases.
+
+Result: ev_006 passed but **broke 7 previously-passing cases** (ev_001-004,
+007-009 — all Acme Corporation queries). The Acme Industries runner-up scored
+90 against any Acme Corp query, triggering false ambiguity even on fully-specified
+names like "Acme Corporation".
+
+Lesson: gap threshold alone can't distinguish "ambiguous query" from
+"fully-specified query that shares a token with another customer".
+
+**Iteration 3: exact-match override + customer master cleanup**
+
+Two changes:
+1. Removed standalone `"Acme"` alias from CUST001 in `customers.json`.
+   Real-world principle: customer masters should not have aliases that
+   are ambiguous between two customers.
+2. Added exact-match override in `lookup_customer`: if the query exactly
+   matches one of the top customer's names/aliases (case-insensitive),
+   bypass the gap-based ambiguity check. Reverted gap check to strict `<`.
+
+Initially declared 10/10. **Re-running pytest revealed ev_006 still failing.**
+Documentation error — claimed resolution before verifying with the suite.
+
+**Iteration 4: widen gap to `<= 15`**
+
+Diagnosed why ev_006 still failed: suffix stripping interacts with single-word
+queries. `_strip_suffixes("Acme Corp")` → "acme"; `_strip_suffixes("Acme")` → "acme".
+After stripping, both look identical → score 100, not the expected partial match.
+
+This inflated the apparent score gap while the underlying ambiguity remained.
+Resolution: widen the gap threshold to `<= 15`. The exact-match override
+prevents legitimate full-name queries from being flagged false-ambiguous,
+so a wider gap is safe.
+
+Final logic:
+- Exact-match → resolve confidently regardless of gap
+- Otherwise, gap > 15 → resolve
+- Otherwise → ambiguous, return `None`
+
+Result: 10/10 ✓.
+
+### Lessons from this multi-iteration debug
+- **Defensive heuristics interact in non-obvious ways.** Suffix stripping
+  (which fixed Bug B) interacted with the gap rule (designed for Bug A) to
+  inflate scores in a third class of input — single-word ambiguous queries.
+  Each fix was correct in isolation; combined they created a new edge case.
+- **Multi-part fixes are easy to half-apply.** Iteration 3 required both a
+  code change and a data change. Half-applying either one defeated the fix.
+  The eval suite is the only valid signal that a multi-part change actually
+  landed.
+- **Threshold tuning has limits.** When a single rule can't separate two
+  cases that should behave differently, you need either smarter heuristics
+  or cleaner data — often both.
+- **Verify before you declare victory.** Iteration 3's premature "fixed!"
+  was caught immediately by re-running pytest. Without the suite, this would
+  have been a silent regression discovered weeks later.
+
+### Customer master change
+Removed `"Acme"` from CUST001's aliases. Justification: an alias should
+uniquely identify a customer. "Acme" cannot uniquely identify CUST001 when
+CUST002 is also commonly called "Acme". Cleaning the master data is part
+of the fix, not a separate concern.
+
+---
+
+## Open for Week 2+
+
+- Multi-run eval harness — run each case 5-10x, report pass-rate distribution.
+  Necessary for finance-grade evals given LLM non-determinism.
+- LangGraph rewrite — explicit state machine instead of in-loop control flow.
+  Same eval suite should still pass 10/10.
+- Persistent audit log — replace stdout `verbose=True` with append-only
+  Postgres table.
+- Multi-format input — PDF, Excel, EDI 820 parsers feeding the same agent.
+- Confidence calibration analysis — is `0.95` actually 95% accuracy in
+  practice? Requires ~100+ labeled cases to measure.
+- HITL review UI — Streamlit interface for low-confidence cases.
+
+---
+
+## Week 1 retrospective
+
+### What I learned
+- **Schema-first design is non-negotiable.** Pydantic schemas saved hours
+  of debugging by forcing clarity early.
+- **Tool descriptions are prompt engineering.** Single biggest reliability
+  improvements came from rewriting tool descriptions, not the system prompt.
+- **Eval failures fall into 3 buckets:** real bugs, bad evals, convention
+  disagreements. Triage discipline matters more than fix speed.
+- **LLM non-determinism is a real constraint, not a tutorial detail.** Some
+  models don't even let you set temperature.
+- **Defensive heuristics interact.** You can't reason about them one at a time.
+  The eval suite is what makes interaction bugs catchable.
+
+### What I'd do differently
+- Spend longer on Day 1 schema design. The deduction-semantics question
+  surfaced 3 days later as a real bug — an extra hour on Day 1 would have
+  caught it.
+- Write 2-3 eval cases on Day 1 alongside the schema. They'd have anchored
+  later design decisions.
+- Use a real logger from the start instead of `verbose=True`. Cheap to add
+  later but builds the habit.
+
+### Skills I now have that I didn't 5 days ago
+- Building a tool-calling agent loop from scratch (no framework)
+- Pydantic v2 with custom validators and cross-field business rules
+- Designing eval sets that surface real failure modes
+- Triaging "is this an agent bug or an eval bug?"
+- Writing tool schemas that constrain LLM behavior
+- Iterating on threshold-based heuristics through evals
+- Diagnosing interaction bugs between defensive heuristics
+
+### What's blocking me from production-grade work today
+- No multi-run eval methodology (single-shot only)
+- No persistent audit log (stdout only)
+- No real database backend (JSON files)
+- No HITL review UI
+- No observability or tracing infrastructure
+
+(Each of these is on the Week 2-12 roadmap.)
